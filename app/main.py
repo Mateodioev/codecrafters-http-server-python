@@ -229,6 +229,17 @@ def file_route(request: RequestContent, *args) -> ResponseContent:
             .set_body(file.read())
 
 
+def create_file_route(request: RequestContent, *args) -> ResponseContent:
+    # The file to create
+    file_path = f"{request.server_directory}/{args[0]}"
+
+    with open(file_path, "w") as file:
+        file.write(request.body)
+
+    return ResponseContent() \
+        .set_status_code(201, "Created")
+
+
 def main():
     parser = argparse.ArgumentParser("Simple python server")
     # Get the directory from the command line arguments (--directory)
@@ -243,6 +254,7 @@ def main():
     server.on("GET", "/echo/{str}", echo_route)
     server.on("GET", "/user-agent", user_agent_route)
     server.on("GET", "/files/{filename}", file_route)
+    server.on("POST", "/files/{filename}", create_file_route)
     server.on("GET", "/", index_route)
     server.run()
     server.close()
