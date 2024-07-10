@@ -73,6 +73,8 @@ class RequestParser():
 
 
 class ResponseContent():
+    VALID_ENCODINGS = ('gzip',)
+
     def __init__(self) -> None:
         self.headers = {}
         self.body = ""
@@ -113,6 +115,7 @@ class ResponseContent():
     def to_encoded_response(self) -> str:
         if self.headers.get("Content-Type") is None:
             self.set_content_type("text/plain")
+
         self.set_header("Content-Length", str(len(self.body)))
 
         status_line = f"{HTTP_VERSION} {self.status_code} {self.reason_phrase}"
@@ -195,6 +198,10 @@ class ServerSocket():
                 if route.match(request.path):
                     request.server_directory = self.directory
                     response = route.callback(request, *route.args)
+                    encodings = request.headers_pair('Accept-Encoding')
+                    if any(encoding in ResponseContent.VALID_ENCODINGS for encoding in encodings):
+                        response.set_header('Content-Encoding', encodings[0],)
+
                     client.send(bytes(response))
                     break
             else:
