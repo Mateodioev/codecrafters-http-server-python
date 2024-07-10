@@ -1,4 +1,5 @@
 import socket
+import re
 
 CRLF_DELIMITER = "\r\n"
 HTTP_VERSION = "HTTP/1.1"
@@ -69,35 +70,139 @@ class RequestParser():
         )
 
 
-def create_response_body(status_code: int = 200, reason_phrase: str = "OK", headers: dict = {}, body: str = "", http_version: str = HTTP_VERSION) -> str:
-    response = f"{http_version} {status_code} {reason_phrase}{CRLF_DELIMITER}"
-    for key, value in headers.items():
-        response += f"{key}: {value}{CRLF_DELIMITER}"
-    response += CRLF_DELIMITER
-    response += body
-    return response
+class ResponseContent():
+    def __init__(self) -> None:
+        self.headers = {}
+        self.body = ""
+        self.status_code = 200
+        self.reason_phrase = "OK"
+
+    @staticmethod
+    def not_found():
+        return ResponseContent() \
+            .set_status_code(404, "Not Found") \
+            .set_body("Not Found")
+
+    def set_header(self, key: str, value: str):
+        return self.set_header_pair(key, (value,))
+
+    def set_header_pair(self, key: str, values: tuple):
+        self.headers[key] = values
+        return self
+
+    def set_content_type(self, content_type: str):
+        return self.set_header("Content-Type", content_type)
+
+    def set_status_code(self, status_code: int, reason_phrase: str = "OK"):
+        self.status_code = status_code
+        self.reason_phrase = reason_phrase
+        return self
+
+    def set_body(self, body: str):
+        self.body = body
+        return self
+
+    def to_encoded_response(self) -> str:
+        if self.headers.get("Content-Type") is None:
+            self.set_content_type("text/plain")
+        self.set_header("Content-Length", str(len(self.body)))
+
+        status_line = f"{HTTP_VERSION} {self.status_code} {self.reason_phrase}"
+        general_headers = CRLF_DELIMITER.join(
+            [f"{key}: {', '.join(value)}" for key,
+             value in self.headers.items()]
+        )
+        return f"{status_line}{CRLF_DELIMITER}{general_headers}{CRLF_DELIMITER*2}{self.body}"
+
+    def __bytes__(self) -> bytes:
+        return self.to_encoded_response().encode()
+
+
+class Route():
+    def __init__(self, path: str, callback) -> None:
+        """
+        Represents a route in the server.
+
+        :param path: The path of the route (e.g. /, /about, /echo/{user})
+        :param callback: The callback function to be called when the route is matched
+        """
+        self.path = path
+        self.callback = callback
+        self.pattern = self._build_pattern()
+        self.args = []
+
+    def match(self, path: str) -> bool:
+        """
+        Checks if the given path matches the route.
+        """
+        match = re.match(self.pattern, path)
+        if match:
+            self.args = match.groups()
+            return True
+        return False
+
+    def _build_pattern(self):
+        """
+        Builds a regex pattern from the path.
+        """
+        if self.path == "/":
+            return r"^/$"
+        return re.sub(r"{(\w+)}", r"([^/]+)", self.path)
+
+
+class ServerSocket():
+    def __init__(self, host: str, port: int):
+        self.socket = socket.create_server((host, port), reuse_port=True)
+        self.router = {
+            "GET": [],
+            "POST": [],
+            "PUT": [],
+            "DELETE": [],
+            # Add more methods if needed
+        }
+
+    def on(self, method: str, path: str, callback) -> None:
+        self.router[method.upper()].append(Route(path, callback))
+
+    def run(self) -> None:
+        self.socket.listen()
+        while True:
+            client, _ = self.socket.accept()
+            data = client.recv(2048).decode()
+            request = RequestParser(data).parse()
+
+            # In need to move this to a function
+            if request.method in self.router:
+                routes = self.router[request.method]
+                for route in routes:
+                    if route.match(request.path):
+                        response = route.callback(request, *route.args)
+                        client.send(bytes(response))
+                        break
+                else:
+                    client.send(bytes(ResponseContent.not_found()))
+
+                client.close()
+
+    def close(self):
+        self.socket.close()
+
+
+def index_route(request: RequestContent, *args) -> ResponseContent:
+    return ResponseContent().set_body("Hello, World!: ")
+
+
+def echo_route(request: RequestContent, *args) -> ResponseContent:
+    return ResponseContent().set_body(args[0])
 
 
 def main():
-    # You can use print statements as follows for debugging, they'll be visible when running tests.
-    print("Logs from your program will appear here!")
+    server = ServerSocket("localhost", 4221)
 
-    # Uncomment this to pass the first stage
-    #
-    server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
-    client, addr = server_socket.accept()  # wait for client
-
-    # receive data from client
-    data = client.recv(2048).decode()
-    request = RequestParser(data).parse()
-
-    if request.path == "/":
-        client.sendall(create_response_body().encode())
-    else:
-        client.sendall(create_response_body(
-            status_code=404,
-            reason_phrase="Not Found"
-        ).encode())
+    server.on("GET", "/echo/{str}", echo_route)
+    server.on("GET", "/", index_route)
+    server.run()
+    server.close()
 
 
 if __name__ == "__main__":
