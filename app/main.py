@@ -3,13 +3,23 @@ import socket
 import re
 from os import path
 from threading import Thread
+import gzip
 
 CRLF_DELIMITER = "\r\n"
 HTTP_VERSION = "HTTP/1.1"
 
 
-class RequestContent():
-    def __init__(self, *, method: str, path: str, http_version: str, headers: dict, body: str, server_directory: str = None) -> None:
+class RequestContent:
+    def __init__(
+            self,
+            *,
+            method: str,
+            path: str,
+            http_version: str,
+            headers: dict,
+            body: str,
+            server_directory: str = None,
+    ) -> None:
         self.method = method
         self.path = path
         self.http_version = http_version
@@ -27,17 +37,24 @@ class RequestContent():
         """
         return self.headers.get(key.lower()) or ()
 
-    def to_encoded_request(self) -> str:
+    def to_encoded_request(self) -> bytes:
+        delimiter = CRLF_DELIMITER.encode()
         headers_line = f"{self.method} {self.path} {self.http_version}"
-        general_headers = CRLF_DELIMITER.join(
-            [f"{key}: {', '.join(value)}" for key,
-             value in self.headers.items()]
-        )
+        headers = [f"{key}: {', '.join(value)}".encode()
+                   for key, value in self.headers.items()]
+        if self.body is not bytes:
+            self.body = str(self.body).encode()
 
-        return f"{headers_line}{CRLF_DELIMITER}{general_headers}{CRLF_DELIMITER}{self.body}"
+        return b"".join([
+            headers_line.encode(),
+            delimiter,
+            *headers,
+            delimiter,
+            self.body,
+        ])
 
     def __bytes__(self) -> bytes:
-        return self.to_encoded_request().encode()
+        return self.to_encoded_request()
 
     def __str__(self) -> str:
         return f"RequestContent(method={self.method}, url={self.path}, http_version={self.http_version}, headers={self.headers}, body={self.body})"
@@ -72,14 +89,14 @@ class RequestParser():
         )
 
 
-class ResponseContent():
+class ResponseContent:
     VALID_ENCODINGS = ('gzip',)
 
     def __init__(self) -> None:
-        self.headers = {}
-        self.body = ""
-        self.status_code = 200
-        self.reason_phrase = "OK"
+        self.headers: dict = {}
+        self.body: str = ""
+        self.status_code: int = 200
+        self.reason_phrase: str = "OK"
 
     @staticmethod
     def not_found():
@@ -109,27 +126,38 @@ class ResponseContent():
         return self
 
     def set_body(self, body: str):
+        self.body = str(body)
+        return self
+
+    def set_raw_body(self, body: bytes):
         self.body = body
         return self
 
-    def to_encoded_response(self) -> str:
+    def to_encoded_response(self) -> bytes:
+        if not isinstance(self.body, (bytes, bytearray)):
+            self.body = str(self.body).encode()
+
         if self.headers.get("Content-Type") is None:
             self.set_content_type("text/plain")
-
         self.set_header("Content-Length", str(len(self.body)))
 
+        delimiter = CRLF_DELIMITER.encode()
         status_line = f"{HTTP_VERSION} {self.status_code} {self.reason_phrase}"
-        general_headers = CRLF_DELIMITER.join(
-            [f"{key}: {', '.join(value)}" for key,
-             value in self.headers.items()]
-        )
-        return f"{status_line}{CRLF_DELIMITER}{general_headers}{CRLF_DELIMITER*2}{self.body}"
+        general_headers = [f"{key}: {', '.join(value)}".encode(
+        ) for key, value in self.headers.items()]
+
+        return delimiter.join([
+            status_line.encode(),
+            *general_headers,
+            b'',
+            self.body,
+        ])
 
     def __bytes__(self) -> bytes:
-        return self.to_encoded_response().encode()
+        return self.to_encoded_response()
 
 
-class Route():
+class Route:
     def __init__(self, path: str, callback) -> None:
         """
         Represents a route in the server.
@@ -161,7 +189,7 @@ class Route():
         return re.sub(r"{(\w+)}", r"([^/]+)", self.path)
 
 
-class ServerSocket():
+class ServerSocket:
     def __init__(self, host: str, port: int):
         self.socket = socket.create_server((host, port), reuse_port=True)
         self.router = {
@@ -187,7 +215,7 @@ class ServerSocket():
             client.close()
 
     def handle_connection(self, client: socket):
-        while ((data := client.recv(2048)) != b''):
+        while (data := client.recv(2048)) != b'':
             request = RequestParser(data.decode()).parse()
             if request.method not in self.router:
                 client.send(bytes(ResponseContent.method_not_allowed()))
@@ -197,10 +225,15 @@ class ServerSocket():
             for route in routes:
                 if route.match(request.path):
                     request.server_directory = self.directory
-                    response = route.callback(request, *route.args)
+                    response: ResponseContent = route.callback(
+                        request, *route.args)
                     encodings = request.headers_pair('Accept-Encoding')
                     if any(encoding in ResponseContent.VALID_ENCODINGS for encoding in encodings):
-                        response.set_header_pair('Content-Encoding', ResponseContent.VALID_ENCODINGS)
+                        response.set_header_pair(
+                            'Content-Encoding', ResponseContent.VALID_ENCODINGS)
+                        response.set_raw_body(
+                            gzip.compress(response.body.encode())
+                        )
 
                     client.send(bytes(response))
                     break
