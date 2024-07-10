@@ -1,5 +1,7 @@
+import argparse
 import socket
 import re
+from os import path
 from threading import Thread
 
 CRLF_DELIMITER = "\r\n"
@@ -7,12 +9,14 @@ HTTP_VERSION = "HTTP/1.1"
 
 
 class RequestContent():
-    def __init__(self, *, method: str, path: str, http_version: str, headers: dict, body: str) -> None:
+    def __init__(self, *, method: str, path: str, http_version: str, headers: dict, body: str, server_directory: str = None) -> None:
         self.method = method
         self.path = path
         self.http_version = http_version
         self.headers = headers
         self.body = body
+        # Just use this for task AP6
+        self.server_directory = server_directory
 
     def header(self, key: str) -> str:
         return ', '.join(self.headers_pair(key))
@@ -164,6 +168,10 @@ class ServerSocket():
             "DELETE": [],
             # Add more methods if needed
         }
+        self.directory = None
+
+    def set_directory(self, directory: str) -> None:
+        self.directory = directory
 
     def on(self, method: str, path: str, callback) -> None:
         self.router[method.upper()].append(Route(path, callback))
@@ -185,6 +193,7 @@ class ServerSocket():
             routes = self.router[request.method]
             for route in routes:
                 if route.match(request.path):
+                    request.server_directory = self.directory
                     response = route.callback(request, *route.args)
                     client.send(bytes(response))
                     break
@@ -208,11 +217,32 @@ def user_agent_route(request: RequestContent, *args) -> ResponseContent:
         .set_body(request.header("UsEr-aGeNT"))
 
 
+def file_route(request: RequestContent, *args) -> ResponseContent:
+    file_path = f"{request.server_directory}/{args[0]}"
+    # Check if the file exists
+    if not path.exists(file_path):
+        return ResponseContent.not_found()
+
+    with open(file_path, "r") as file:
+        return ResponseContent() \
+            .set_content_type('application/octet-stream') \
+            .set_body(file.read())
+
+
 def main():
-    server = ServerSocket("localhost", 4221)
+    parser = argparse.ArgumentParser("Simple python server")
+    # Get the directory from the command line arguments (--directory)
+    parser.add_argument("--directory", type=str, default=None)
+    parser.add_argument("--port", type=int, default=4221)
+    parser.add_argument("--host", type=str, default="localhost")
+    args = parser.parse_args()
+
+    server = ServerSocket(args.host, args.port)
+    server.set_directory(args.directory)
 
     server.on("GET", "/echo/{str}", echo_route)
     server.on("GET", "/user-agent", user_agent_route)
+    server.on("GET", "/files/{filename}", file_route)
     server.on("GET", "/", index_route)
     server.run()
     server.close()
