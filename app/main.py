@@ -1,5 +1,6 @@
 import socket
 import re
+from threading import Thread
 
 CRLF_DELIMITER = "\r\n"
 HTTP_VERSION = "HTTP/1.1"
@@ -79,6 +80,12 @@ class ResponseContent():
         return ResponseContent() \
             .set_status_code(404, "Not Found") \
             .set_body("Not Found")
+
+    @staticmethod
+    def method_not_allowed():
+        return ResponseContent() \
+            .set_status_code(405, "Method Not Allowed") \
+            .set_body("Method Not Allowed")
 
     def set_header(self, key: str, value: str):
         return self.set_header_pair(key, (value,))
@@ -162,31 +169,34 @@ class ServerSocket():
         self.router[method.upper()].append(Route(path, callback))
 
     def run(self) -> None:
-        self.socket.listen()
         while True:
             client, _ = self.socket.accept()
-            data = client.recv(2048).decode()
-            request = RequestParser(data).parse()
+            thread = Thread(target=self.handle_connection, args=(client,))
+            thread.run()
+            client.close()
 
-            # In need to move this to a function
-            if request.method in self.router:
-                routes = self.router[request.method]
-                for route in routes:
-                    if route.match(request.path):
-                        response = route.callback(request, *route.args)
-                        client.send(bytes(response))
-                        break
-                else:
-                    client.send(bytes(ResponseContent.not_found()))
+    def handle_connection(self, client: socket):
+        while ((data := client.recv(2048)) != b''):
+            request = RequestParser(data.decode()).parse()
+            if request.method not in self.router:
+                client.send(bytes(ResponseContent.method_not_allowed()))
+                break
 
-                client.close()
+            routes = self.router[request.method]
+            for route in routes:
+                if route.match(request.path):
+                    response = route.callback(request, *route.args)
+                    client.send(bytes(response))
+                    break
+            else:
+                client.send(bytes(ResponseContent.not_found()))
 
     def close(self):
         self.socket.close()
 
 
 def index_route(request: RequestContent, *args) -> ResponseContent:
-    return ResponseContent().set_body("Hello, World!: ")
+    return ResponseContent()
 
 
 def echo_route(request: RequestContent, *args) -> ResponseContent:
