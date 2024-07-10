@@ -14,16 +14,13 @@ class RequestContent():
         self.body = body
 
     def header(self, key: str) -> str:
-        """
-        Returns the first value of the header with the given key.
-        """
-        return self.headers.get(key)[0] or ""
+        return ', '.join(self.headers_pair(key))
 
     def headers_pair(self, key: str) -> tuple:
         """
         Returns the key-value pair of the header with the given key.
         """
-        return self.headers.get(key) or ()
+        return self.headers.get(key.lower()) or ()
 
     def to_encoded_request(self) -> str:
         headers_line = f"{self.method} {self.path} {self.http_version}"
@@ -58,7 +55,7 @@ class RequestParser():
         headers_dict = {}
         for header in headers:
             key, value = header.split(": ", maxsplit=2)
-            headers_dict[key] = tuple(value.split(", "))
+            headers_dict[key.lower()] = tuple(value.split(", "))
             # This is RFC 2616 compliant, but we don't need to worry about multiple headers with the same key
 
         return RequestContent(
@@ -196,10 +193,16 @@ def echo_route(request: RequestContent, *args) -> ResponseContent:
     return ResponseContent().set_body(args[0])
 
 
+def user_agent_route(request: RequestContent, *args) -> ResponseContent:
+    return ResponseContent() \
+        .set_body(request.header("UsEr-aGeNT"))
+
+
 def main():
     server = ServerSocket("localhost", 4221)
 
     server.on("GET", "/echo/{str}", echo_route)
+    server.on("GET", "/user-agent", user_agent_route)
     server.on("GET", "/", index_route)
     server.run()
     server.close()
