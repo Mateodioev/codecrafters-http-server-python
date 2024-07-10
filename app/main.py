@@ -200,7 +200,7 @@ class ServerSocket():
                     response = route.callback(request, *route.args)
                     encodings = request.headers_pair('Accept-Encoding')
                     if any(encoding in ResponseContent.VALID_ENCODINGS for encoding in encodings):
-                        response.set_header('Content-Encoding', encodings[0],)
+                        response.set_header_pair('Content-Encoding', ResponseContent.VALID_ENCODINGS)
 
                     client.send(bytes(response))
                     break
